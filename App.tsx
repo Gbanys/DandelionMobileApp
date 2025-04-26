@@ -1,131 +1,136 @@
-/**
- * Sample React Native App
- * https://github.com/facebook/react-native
- *
- * @format
- */
+import React, { useEffect, useRef, useState } from 'react';
+import { View, StyleSheet, Dimensions } from 'react-native';
+import { Camera, useCameraDevice } from 'react-native-vision-camera';
+import axios from 'axios';
+import Svg, { Rect, Text as SvgText } from 'react-native-svg';
 
-import React from 'react';
-import type {PropsWithChildren} from 'react';
-import {
-  ScrollView,
-  StatusBar,
-  StyleSheet,
-  Text,
-  useColorScheme,
-  View,
-} from 'react-native';
+const { width: screenWidth, height: screenHeight } = Dimensions.get('window');
 
-import {
-  Colors,
-  DebugInstructions,
-  Header,
-  LearnMoreLinks,
-  ReloadInstructions,
-} from 'react-native/Libraries/NewAppScreen';
+export default function App() {
+  const device = useCameraDevice('back');
+  const cameraRef = useRef<Camera>(null);
 
-type SectionProps = PropsWithChildren<{
-  title: string;
-}>;
+  // Lock so we don't fire overlapping requests 
+  const isProcessing = useRef(false);
+  // The boxes to draw
+  const [boxes, setBoxes] = useState<
+    { x: number; y: number; width: number; height: number; label: string; confidence: number }[]
+  >([]);
 
-function Section({children, title}: SectionProps): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
-  return (
-    <View style={styles.sectionContainer}>
-      <Text
-        style={[
-          styles.sectionTitle,
-          {
-            color: isDarkMode ? Colors.white : Colors.black,
-          },
-        ]}>
-        {title}
-      </Text>
-      <Text
-        style={[
-          styles.sectionDescription,
-          {
-            color: isDarkMode ? Colors.light : Colors.dark,
-          },
-        ]}>
-        {children}
-      </Text>
-    </View>
-  );
-}
+  // Request permission once
+  useEffect(() => {
+    Camera.requestCameraPermission();
+  }, []);
 
-function App(): React.JSX.Element {
-  const isDarkMode = useColorScheme() === 'dark';
+  // Kick off a never-ending loop
+  useEffect(() => {
+    let active = true;
+    async function loop() {
+      while (active) {
+        if (!isProcessing.current) {
+          isProcessing.current = true;
+          await captureAndDetect();
+          isProcessing.current = false;
+        }
+        // small pause to avoid 100% CPU
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+    loop();
+    return () => {
+      active = false;
+    };
+  }, [device]);
 
-  const backgroundStyle = {
-    backgroundColor: isDarkMode ? Colors.darker : Colors.lighter,
+  // Capture, send, scale, and set boxes (or clear)
+  const captureAndDetect = async () => {
+    if (!cameraRef.current || !device) return;
+
+    try {
+      // 1) Grab a photo as fast as possible
+      const photo = await cameraRef.current.takePhoto({
+        qualityPrioritization: 'speed',
+      });
+
+      // 2) Build multipart form
+      const form = new FormData();
+      form.append('image', {
+        uri: `file://${photo.path}`,
+        type: 'image/jpeg',
+        name: 'frame.jpg',
+      } as any);
+
+      // 3) POST to your FastAPI
+      const res = await axios.post('http://192.168.0.33:8000/detect', form, {
+        headers: { 'Content-Type': 'multipart/form-data' },
+        timeout: 5000,
+      });
+
+      // 4) If we got detections, scale them; otherwise clear
+      const { image_width, image_height, detections } = res.data;
+      if (!detections || detections.length === 0) {
+        setBoxes([]);
+        return;
+      }
+
+      const scaleX = screenWidth  / image_width;
+      const scaleY = screenHeight / image_height;
+
+      const scaled = detections.map((d: any) => ({
+        x:      d.x      * scaleX,
+        y:      d.y      * scaleY,
+        width:  d.width  * scaleX,
+        height: d.height * scaleY,
+        label:      d.label,
+        confidence: d.confidence,
+      }));
+
+      setBoxes(scaled);
+    } catch (e) {
+      console.warn('Inference error, clearing boxes', e.message || e);
+      setBoxes([]); // clear on error
+    }
   };
 
-  /*
-   * To keep the template simple and small we're adding padding to prevent view
-   * from rendering under the System UI.
-   * For bigger apps the recommendation is to use `react-native-safe-area-context`:
-   * https://github.com/AppAndFlow/react-native-safe-area-context
-   *
-   * You can read more about it here:
-   * https://github.com/react-native-community/discussions-and-proposals/discussions/827
-   */
-  const safePadding = '5%';
-
   return (
-    <View style={backgroundStyle}>
-      <StatusBar
-        barStyle={isDarkMode ? 'light-content' : 'dark-content'}
-        backgroundColor={backgroundStyle.backgroundColor}
-      />
-      <ScrollView
-        style={backgroundStyle}>
-        <View style={{paddingRight: safePadding}}>
-          <Header/>
-        </View>
-        <View
-          style={{
-            backgroundColor: isDarkMode ? Colors.black : Colors.white,
-            paddingHorizontal: safePadding,
-            paddingBottom: safePadding,
-          }}>
-          <Section title="Step One">
-            Edit <Text style={styles.highlight}>App.tsx</Text> to change this
-            screen and then come back to see your edits.
-          </Section>
-          <Section title="See Your Changes">
-            <ReloadInstructions />
-          </Section>
-          <Section title="Debug">
-            <DebugInstructions />
-          </Section>
-          <Section title="Learn More">
-            Read the docs to discover what to do next:
-          </Section>
-          <LearnMoreLinks />
-        </View>
-      </ScrollView>
+    <View style={styles.container}>
+      {device && (
+        <Camera
+          ref={cameraRef}
+          style={StyleSheet.absoluteFill}
+          device={device}
+          isActive
+          photo
+        />
+      )}
+      <Svg style={StyleSheet.absoluteFill}>
+        {boxes.map((b, i) => (
+          <React.Fragment key={i}>
+            <Rect
+              x={b.x}
+              y={b.y}
+              width={b.width}
+              height={b.height}
+              stroke="lime"
+              strokeWidth="2"
+              fill="transparent"
+            />
+            <SvgText
+              x={b.x}
+              y={b.y - 5}
+              fill="lime"
+              fontSize="14"
+              fontWeight="bold"
+            >
+              {`${b.label} ${Math.round(b.confidence * 100)}%`}
+            </SvgText>
+          </React.Fragment>
+        ))}
+      </Svg>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  sectionContainer: {
-    marginTop: 32,
-    paddingHorizontal: 24,
-  },
-  sectionTitle: {
-    fontSize: 24,
-    fontWeight: '600',
-  },
-  sectionDescription: {
-    marginTop: 8,
-    fontSize: 18,
-    fontWeight: '400',
-  },
-  highlight: {
-    fontWeight: '700',
-  },
+  container: { flex: 1, backgroundColor: '#000' },
 });
-
-export default App;
