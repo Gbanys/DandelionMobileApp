@@ -61,7 +61,7 @@ export default function App() {
       } as any);
 
       // 3) POST to your FastAPI
-      const res = await axios.post('http://192.168.0.33:8000/detect', form, {
+      const res = await axios.post('http://35.178.183.95:8000/detect', form, {
         headers: { 'Content-Type': 'multipart/form-data' },
         timeout: 5000,
       });
